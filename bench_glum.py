@@ -1,23 +1,23 @@
 import numpy as np
 from scipy.sparse import csc_matrix
+from scipy.io import mmread
 import os
 import time
 from glum import GeneralizedLinearRegressorCV
 from glum import GeneralizedLinearRegressor
 
-data_prefix = 'data'
-
-def get_data(n, p):
-    make_file_path = lambda suff: \
-        os.path.join(data_prefix, ''.join([str(n), '_', str(p), '_', suff, 'sparse.csv']))
-    X_file = make_file_path('X')
-    y_file = make_file_path('y')
-    beta_true_file = make_file_path('beta_true')
-    return ( 
-        np.genfromtxt(X_file, delimiter=',', skip_header=1), 
-        np.genfromtxt(y_file, delimiter=',', skip_header=1), 
-        np.genfromtxt(beta_true_file, delimiter=',', skip_header=1)
-        )
+def get_data(n, p, data_prefix):
+    # Create file paths
+    X_file = os.path.join(data_prefix, f"{n}_{p}_X.mtx")
+    y_file = os.path.join(data_prefix, f"{n}_{p}_y.csv")
+    beta_true_file = os.path.join(data_prefix, f"{n}_{p}_beta_true.csv")
+    
+    # Read the data
+    X = csc_matrix(mmread(X_file))  # Read .mtx file and convert to CSC format
+    y = np.genfromtxt(y_file, delimiter=',', skip_header=1)
+    beta_true = np.genfromtxt(beta_true_file, delimiter=',', skip_header=1)
+    
+    return X, y, beta_true
 
 def timer_glr(X, y, glr):
     start = time.time()
@@ -25,10 +25,13 @@ def timer_glr(X, y, glr):
     end = time.time()
     return glr_fit, end-start
 
+# load simulated data (spike train convoluted with gaussian point spread function
+# with 1000 / 10000 coefficients being nonzero (all positive) and Gaussian noise
+# added
 n = 10000
 p = 10000
-X, y, beta_true = get_data(n, p)
-X_sparse = csc_matrix(X)
+X_sparse, y, beta_true = get_data(n, p, 'data')
+
 # determine optimal alpha using cross validation
 glrcv = GeneralizedLinearRegressorCV(l1_ratio=1, # lasso
           family='normal',

@@ -1,33 +1,226 @@
+# SPARSE & DENSE EXAMPLE WITH n=p=10000 & nonnegativity constraints ####
+
 library(glmnet)
 library(microbenchmark)
 
+setwd("~/Github/glmnet-benchmark")
+
 data_prefix = 'data'
+data_suffix = 'sparse'
+n = 10000L
+p = 10000L
+
+# simulate data (blurred spike train with Gaussian noise)
+# library(L0glm) # using my experimental L0 penalized GLM package
+# data = simul(method = 1, n = n, p = p, seed = 2) # X simulated as a banded sparse matrix with time-shifted Gaussian peak shape function
+# write.csv(as.matrix(data$X), file=paste0(data_prefix, '/', n, '_', p, '_X', data_suffix, '.csv'), row.names=F)
+# write.csv(data$y, file=paste0(data_prefix, '/', n, '_', p, '_y', data_suffix, '.csv'), row.names=F)
+# write.csv(as.vector(data$beta_true), file=paste0(data_prefix, '/', n, '_', p, '_beta_true', data_suffix, '.csv'), row.names=F)
+
+# NOTE:
+# abess:generate_data() might be a good generic simulation function for
+# benchmarking
+# https://github.com/abess-team/abess/blob/master/R-package/R/generate.data.R
+# make_glm_data in 
+# https://github.com/abess-team/abess/blob/master/python/abess/datasets.py
+
 
 get_data = function(n, p) {
-    make_file_path = function(suff) {
-        paste(data_prefix, '/', n, '_', p, '_', suff, '.csv', sep='')
-    }
-    X_file = make_file_path('X')
-    y_file = make_file_path('y')
-    list(X=read.csv(X_file, header=F), y=read.csv(y_file, header=F))
+  list(X=read.csv(paste0(data_prefix, '/', n, '_', p, '_X', data_suffix, '.csv'), header=T), 
+       y=read.csv(paste0(data_prefix, '/', n, '_', p, '_y', data_suffix, '.csv'), header=T),
+       beta_true=read.csv(paste0(data_prefix, '/', n, '_', p, '_beta_true', data_suffix, '.csv'), header=T))
 }
 
-timer = function(X, y) {
-    time.out = microbenchmark(glmnet(X, y, family='gaussian', tol=1e-14, standardize=F, lambda=0.0074), times=1L, unit='s')
-    glmnet.out = glmnet(X, y, family='gaussian', tol=1e-14, standardize=F, lambda=0.0074)
-    list(out=glmnet.out, elapsed=summary(time.out)$mean)
+timer_glmnet = function(X, y) {
+  time.out = microbenchmark({  cvfit <- cv.glmnet(X, y, family='gaussian', 
+                                                  tol=1e-14, standardize=F, 
+                                                  alpha=1, # LASSO
+                                                  lower.limits=0, # nonnegativity constraints
+                                                  intercept=FALSE, # no intercept
+                                                  nlambda = 100) 
+  fit <- glmnet(X, y, family='gaussian', 
+                tol=1e-14, standardize=F, 
+                alpha=1, # LASSO
+                lower.limits=0, # nonnegativity constraints
+                intercept=FALSE, # no intercept
+                nlambda = 100) }, 
+  times=1L, 
+  unit='s')
+  coefs = coef(fit, s=cvfit$lambda.min)
+  
+  list(fit=fit, coefs=coefs, elapsed=summary(time.out)$mean)
 }
 
-n = 100000L
-p = 100L
+
 dat = get_data(n, p)
+library(Matrix)
 X = as.matrix(dat$X)
-y = as.numeric(dat$y[,1])
-out = timer(X, y)
-glmnet.fit = out$out
-elapsed = out$elapsed
-print("Coef:\n")
-print(glmnet.fit$beta)
-print(paste("Intercept:", glmnet.fit$a0))
-print(paste("N_iter:", glmnet.fit$npasses))
-print(paste("Elapsed:", elapsed))
+X_sparse = Matrix(X, sparse=T)
+y = dat$y[,1]
+coefs_true = dat$beta_true[,1]
+
+# TIMINGS WHEN FIT AS SPARSE SYSTEM WITH GLMNET LASSO OR USING L0 PENALIZED GLM ####
+
+## timings for glmnet when fit as sparse system ####
+out_sparse = timer_glmnet(X_sparse, y)
+R = cor(as.vector(out_sparse$coefs)[-1], coefs_true)
+print("Correlation between estimated & true coefs:\n")
+print(round(R, 4)) 
+print(paste("N_iter:", out_sparse$fit$npasses)) 
+print(paste("Elapsed:", out_sparse$elapsed))
+# [1] "Correlation between estimated & true coefs:\n"
+# > print(round(R, 4)) 
+# [1] 0.9115
+# > print(paste("N_iter:", out_sparse$fit$npasses)) 
+# [1] "N_iter: 762"
+# > print(paste("Elapsed:", out_dense$elapsed))
+# [1] "Elapsed: 0.890483"
+
+plot(x=as.vector(out_sparse$coefs)[-1], y=coefs_true, pch=16, col='steelblue',
+     xlab="estimated coefficients", ylab="true coefficients",
+     main=paste0("glmnet nonnegative LASSO regression\n(n=", n,", p=", p,", R=", round(R,4), ")"))
+
+table(as.vector(out_sparse$coefs)[-1]!=0, 
+      coefs_true!=0, dnn=c("estimated beta nonzero", "true beta nonzero"))
+#                 true beta nonzero
+# estimated beta nonzero FALSE TRUE
+#                  FALSE  8043  225
+#                  TRUE    957  775
+
+
+## timings for L0glm when fit as sparse system using eigen sparse Cholesky LLT solver ####
+# (L0 penalized GLM with L0 penalty approximated via
+# iterative adaptive ridge regression procedure & using 
+# eigen dense or sparse Cholesky LLT solver)
+
+system.time(L0glm_sparse_chol <- L0glm.fit(X_sparse, y, 
+                                      family = gaussian(identity), 
+                                      lambda = "gic", # options "aic", "bic", "gic", "ebic", "mbic"
+                                      nonnegative = TRUE,
+                                      solver = "eigen",
+                                      method = 7L) # Cholesky LLT
+) # 0.18s, i.e. 4x faster than sparse glmnet LASSO fit
+
+R = cor(as.vector(L0glm_sparse_chol$coefficients), coefs_true)
+print("Correlation between estimated & true coefs:\n")
+print(round(R, 4)) # 0.9929 - much better solution than LASSO
+
+plot(x=as.vector(L0glm_sparse_chol$coefficients), y=coefs_true, pch=16, col='steelblue',
+     xlab="estimated coefficients", ylab="true coefficients",
+     main=paste0("L0glm regression\n(n=", n,", p=", p, ", R=", round(R,4), ")"))
+
+table(as.vector(L0glm_sparse_chol$coefficients)!=0, 
+      coefs_true!=0, dnn=c("estimated beta nonzero", "true beta nonzero"));
+# better true positive rate & much lower false positive rate than LASSO
+#                 true beta nonzero
+# estimated beta nonzero FALSE TRUE
+#                  FALSE  8919   45
+#                  TRUE     81  955
+
+
+## timings for L0glm when fit as sparse system using sparse osqp quadratic programming solver ####
+
+system.time(L0glm_sparse_osqp <- L0glm.fit(X_sparse, y, 
+                                           family = gaussian(identity), 
+                                           lambda = "ebic", # options "aic", "bic", "gic", "ebic", "mbic"
+                                           nonnegative = TRUE,
+                                           solver = "osqp") # osqp solver
+) # 11.2s, i.e. 13x slower than sparse glmnet LASSO fit
+
+R = cor(as.vector(L0glm_sparse_osqp$coefficients), coefs_true)
+print("Correlation between estimated & true coefs:\n")
+print(round(R, 4)) # 0.9899 - much better solution than LASSO
+
+
+## timings for L0glm when fit as sparse system using bigGlm glmnet solver ####
+
+system.time(L0glm_sparse_bigglm <- L0glm.fit(X_sparse, y, 
+                                             family = gaussian(identity), 
+                                             lambda = "ebic", # options "aic", "bic", "gic", "ebic", "mbic"
+                                             nonnegative = TRUE,
+                                             solver = "glmnet") # bigGlm glmnet solver
+) # 5.11s, i.e. 6x slower than sparse glmnet LASSO fit
+
+R = cor(as.vector(L0glm_sparse_bigglm$coefficients), coefs_true)
+print("Correlation between estimated & true coefs:\n")
+print(round(R, 4)) # 0.9399 - much better solution than LASSO
+
+
+
+# TIMINGS WHEN FIT AS DENSE SYSTEM WITH GLMNET LASSO OR USING L0 PENALIZED GLM ####
+
+# solutions identical as above just slower
+
+## timings for glmnet when fit as dense system ####
+out_dense = timer_glmnet(X, y)
+R = cor(as.vector(out_dense$coefs)[-1], coefs_true)
+print("Correlation between estimated & true coefs:\n")
+print(round(R, 4)) 
+print(paste("N_iter:", out_dense$fit$npasses)) 
+print(paste("Elapsed:", out_dense$elapsed))
+# [1] "Correlation between estimated & true coefs:\n"
+# > print(round(R, 4)) 
+# [1] 0.9063
+# > print(paste("N_iter:", out_dense$fit$npasses)) 
+# [1] "N_iter: 762"
+# > print(paste("Elapsed:", out_dense$elapsed))
+# [1] "Elapsed: 86.74697"
+
+
+# timings for L0glm when fit as dense system using eigen dense Cholesky LLT solver ####
+# (L0 penalized GLM with L0 penalty approximated via
+# iterative adaptive ridge regression procedure & using 
+# eigen dense or sparse Cholesky LLT solver)
+
+system.time(L0glm_dense_chol <- L0glm.fit(X, y, 
+                        family = gaussian(identity), 
+                        lambda = "ebic", # options "aic", "bic", "gic", "ebic", "mbic"
+                        nonnegative = TRUE,
+                        solver = "eigen",
+                        method = 7L) # Cholesky LLT
+) # 7s, i.e. 12x faster than dense glmnet LASSO fit
+
+R = cor(as.vector(L0glm_dense_chol$coefficients), coefs_true)
+print("Correlation between estimated & true coefs:\n")
+print(round(R, 4)) # 0.9928 - much better solution than LASSO
+
+table(as.vector(L0glm_dense_chol$coefficients)!=0, 
+      coefs_true!=0, dnn=c("estimated beta nonzero", "true beta nonzero"))
+#                 true beta nonzero
+# estimated beta nonzero FALSE TRUE
+#                  FALSE  8919   45
+#                  TRUE     81  955
+
+
+# timings for L0glm when fit as dense system using dense osqp quadratic programming solver ####
+
+system.time(L0glm_dense_osqp <- L0glm.fit(X, y, 
+                                          family = gaussian(identity), 
+                                          lambda = "ebic", # options "aic", "bic", "gic", "ebic", "mbic"
+                                          nonnegative = TRUE,
+                                          solver = "osqp") # osqp solver
+) # 18.98s, i.e. 4.6x faster than dense glmnet LASSO fit
+
+R = cor(as.vector(L0glm_dense_osqp$coefficients), coefs_true)
+print("Correlation between estimated & true coefs:\n")
+print(round(R, 4)) # 0.9899 - much better solution than LASSO
+
+
+# timings for L0glm when fit as dense system using bigGlm glmnet solver ####
+
+system.time(L0glm_dense_bigglm <- L0glm.fit(X, y, 
+                                          family = gaussian(identity), 
+                                          lambda = "ebic", # options "aic", "bic", "gic", "ebic", "mbic"
+                                          nonnegative = TRUE,
+                                          solver = "glmnet") # bigGlm glmnet solver
+) # 12.56s, i.e. 6.9x faster than dense glmnet LASSO fit
+
+R = cor(as.vector(L0glm_dense_bigglm$coefficients), coefs_true)
+print("Correlation between estimated & true coefs:\n")
+print(round(R, 4)) # 0.9399 - much better solution than LASSO
+
+
+
+
+
+

@@ -9,7 +9,7 @@ class GaussianData(object):
         self.p = p
     def make_X(self):
         return np.random.normal(size=(self.n, self.p))
-    def make_beta(self, sparsity=0.5):
+    def make_beta(self, sparsity=0.1):
         nonzeros = np.random.binomial(1, sparsity, size=self.p)
         n_nonzero = np.sum(nonzeros == 1)
         nonzeros[nonzeros == 1] = np.random.normal(size=n_nonzero)
@@ -21,8 +21,8 @@ def make_file_path(n, p, suff):
     return os.path.join(data_prefix, ''.join([str(n), '_', str(p), '_', suff, '.csv']))
 
 if __name__ == '__main__':
-    n = 100000
-    p = 100
+    n = 10000
+    p = 10000
     gd = GaussianData(n, p)
     X, beta = gd.make_X(), gd.make_beta()
     X = (X - np.mean(X, axis=0)) / np.std(X, axis=0)

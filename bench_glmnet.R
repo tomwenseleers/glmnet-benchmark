@@ -3,6 +3,8 @@
 library(glmnet)
 library(microbenchmark)
 library(Matrix)
+library(L0glm) # my own experimental GLM package to fit L0 penalized GLMs
+library(export)
 
 setwd("~/Github/glmnet-benchmark")
 
@@ -11,7 +13,6 @@ n = 10000L
 p = 10000L
 
 # simulate data (blurred spike train with Gaussian noise)
-# library(L0glm) # using my experimental L0 penalized GLM package
 # data = simul(method = 1, n = n, p = p, seed = 2) # X simulated as a banded sparse matrix with time-shifted Gaussian peak shape function
 # writeMM(data$X, file=paste0(data_prefix, '/', n, '_', p, '_X.mtx')) # write sparse dgCMatrix as Matrix Market format
 # write.csv(data$y, file=paste0(data_prefix, '/', n, '_', p, '_y.csv'), row.names=F)
@@ -27,9 +28,9 @@ p = 10000L
 
 
 get_data = function(n, p) {
-  list(X=read.csv(paste0(data_prefix, '/', n, '_', p, '_X', data_suffix, '.csv'), header=T), 
-       y=read.csv(paste0(data_prefix, '/', n, '_', p, '_y', data_suffix, '.csv'), header=T),
-       beta_true=read.csv(paste0(data_prefix, '/', n, '_', p, '_beta_true', data_suffix, '.csv'), header=T))
+  list(X=as(as(readMM(paste0(data_prefix, '/', n, '_', p, '_X.mtx')), "CsparseMatrix"), "dgCMatrix"), 
+       y=read.csv(paste0(data_prefix, '/', n, '_', p, '_y.csv'), header=T),
+       beta_true=read.csv(paste0(data_prefix, '/', n, '_', p, '_beta_true.csv'), header=T))
 }
 
 timer_glmnet = function(X, y) {
@@ -54,9 +55,8 @@ timer_glmnet = function(X, y) {
 
 
 dat = get_data(n, p)
-library(Matrix)
 X_dense = as.matrix(dat$X)
-X_sparse = Matrix(X, sparse=T)
+X_sparse = dat$X
 y = dat$y[,1]
 coefs_true = dat$beta_true[,1]
 
@@ -71,22 +71,24 @@ print(paste("N_iter:", out_sparse$fit$npasses))
 print(paste("Elapsed:", out_sparse$elapsed))
 # [1] "Correlation between estimated & true coefs:\n"
 # > print(round(R, 4)) 
-# [1] 0.9115
+# [1] 0.9092
 # > print(paste("N_iter:", out_sparse$fit$npasses)) 
 # [1] "N_iter: 762"
 # > print(paste("Elapsed:", out_dense$elapsed))
-# [1] "Elapsed: 0.890483"
+# [1] "Elapsed: 0.9451085"
 
 plot(x=as.vector(out_sparse$coefs)[-1], y=coefs_true, pch=16, col='steelblue',
      xlab="estimated coefficients", ylab="true coefficients",
      main=paste0("glmnet nonnegative LASSO regression\n(n=", n,", p=", p,", R=", round(R,4), ")"))
+dir.create("./plots/")
+graph2png(file="./plots/glmnet_LASSO_true_vs_estimated_coefs.png", width=7, height=5)
 
 table(as.vector(out_sparse$coefs)[-1]!=0, 
       coefs_true!=0, dnn=c("estimated beta nonzero", "true beta nonzero"))
 #                 true beta nonzero
 # estimated beta nonzero FALSE TRUE
-#                  FALSE  8043  225
-#                  TRUE    957  775
+#                  FALSE  7929  195
+#                  TRUE   1071  805
 
 
 ## timings for L0glm when fit as sparse system using eigen sparse Cholesky LLT solver ####
@@ -109,6 +111,7 @@ print(round(R, 4)) # 0.9929 - much better solution than LASSO
 plot(x=as.vector(L0glm_sparse_chol$coefficients), y=coefs_true, pch=16, col='steelblue',
      xlab="estimated coefficients", ylab="true coefficients",
      main=paste0("L0glm regression\n(n=", n,", p=", p, ", R=", round(R,4), ")"))
+graph2png(file="./plots/L0glm_true_vs_estimated_coefs.png", width=7, height=5)
 
 table(as.vector(L0glm_sparse_chol$coefficients)!=0, 
       coefs_true!=0, dnn=c("estimated beta nonzero", "true beta nonzero"));
